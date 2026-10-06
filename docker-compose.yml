@@ -1,0 +1,30 @@
+# Local AWS stand-ins. Dummy credentials only; all state is throwaway.
+services:
+  localstack:
+    image: localstack/localstack:4.4
+    container_name: mlac-localstack
+    ports:
+      - "127.0.0.1:4566:4566"
+    environment:
+      SERVICES: s3,kinesis
+    volumes:
+      - localstack-data:/var/lib/localstack
+
+  iceberg-rest:
+    image: apache/iceberg-rest-fixture:latest
+    container_name: mlac-iceberg-rest
+    depends_on:
+      - localstack
+    ports:
+      - "127.0.0.1:8181:8181"
+    environment:
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_REGION: us-east-1
+      CATALOG_WAREHOUSE: s3://warehouse/
+      CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
+      CATALOG_S3_ENDPOINT: http://localstack:4566
+      CATALOG_S3_PATH__STYLE__ACCESS: "true"
+
+volumes:
+  localstack-data:
