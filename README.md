@@ -1,66 +1,94 @@
 # My Local AWS Cloud
 
-A local, disposable emulation of the AWS services used in data-lake and ETL
-designs, so architecture ideas can be built and tested on a laptop or VM
-before anything is deployed to a real account.
+A local, disposable stand-in for the AWS services used in data-lake and ETL designs, plus
+Terraform building blocks, so any project can create buckets, streams and other services on
+a laptop or VM before anything is deployed to a real account.
 
-**Status:** early scaffolding. S3 and Kinesis (LocalStack) and an Iceberg REST catalog run locally; Iceberg table examples and query tooling are not built yet.
+**Status:** Moto (replaces LocalStack) + Iceberg REST catalog running; `s3-bucket` Terraform
+module, a project template and a `core` stack built and tested. Other service modules are added
+when a project needs them.
 
-## Goals
+## Stack
 
-- Prototype data-lake and streaming designs locally, at zero cloud cost.
-- Keep every component reproducible from one command (`docker compose up`).
-- Mirror production service boundaries so designs carry over to real AWS.
-- Stay safe to destroy and rebuild at any time; no real data lives here.
+| Concern           | Local component                          | AWS service it stands in for |
+|-------------------|------------------------------------------|------------------------------|
+| AWS APIs          | Moto 5.2.4 (Apache 2.0, free)            | S3, Kinesis, SQS, SNS, DynamoDB, SSM, Secrets Manager, ... |
+| Table format      | Apache Iceberg (bronze/silver/gold)       | Iceberg on S3                |
+| Catalog           | Iceberg REST fixture (port 8181)         | Glue Data Catalog            |
+| Infrastructure    | Terraform, `hashicorp/aws ~> 6.0`        | Same code as real AWS        |
+| Query / transform | DuckDB, Polars, PyIceberg (planned)      | Athena / Glue                |
 
-## Planned stack
+Moto replaced LocalStack on 2026-10-29: LocalStack's current images need a paid account token;
+Moto is free and maintained. Moto answers on the same port LocalStack used (4566).
 
-| Concern              | Local component                        | AWS service it stands in for |
-|----------------------|----------------------------------------|------------------------------|
-| Object storage       | LocalStack S3 (4.4, pinned)                 | S3                           |
-| Streaming            | LocalStack Kinesis (Kafka later, to compare) | Kinesis / MSK            |
-| Table format         | Apache Iceberg (medallion: bronze/silver/gold) | Iceberg on S3        |
-| Query / transform    | DuckDB, Polars, PyIceberg              | Athena / Glue                |
-| Catalog              | Iceberg REST fixture (port 8181)       | Glue Data Catalog            |
-
-## Prerequisites
-
-- Docker (or Podman) with the compose plugin
-- Python 3.11+ with a virtualenv
-- AWS CLI v2 (pointed at the local endpoint, not a real account)
-
-## Layout (planned)
+## Layout
 
 ```
-my-local-aws-cloud/
-  docker-compose.yml   # the local services
-  scripts/             # bootstrap: buckets, streams, catalog
-  examples/            # small end-to-end pipelines
-  docs/                # design notes
+docker-compose.yml       Moto (localhost:4566) + Iceberg REST (localhost:8181)
+modules/s3-bucket/       bucket + encryption + public-access block + optional versioning,
+                         optionally loaded from a local folder
+templates/project/       starter Terraform stack pointed at Moto
+stacks/core/             warehouse/bronze/silver/gold buckets + Kinesis stream "events"
+scripts/bootstrap.sh     build stacks/core
+scripts/new-stack.sh     new stack from the template (here or in another project)
+scripts/tf-apply.sh      init + apply a stack (handles a Moto tagging quirk)
 ```
 
 ## Usage
 
 ```bash
-docker compose up -d
-./scripts/bootstrap.sh     # creates buckets warehouse/bronze/silver/gold and stream "events"
-docker compose down -v     # wipe everything
+docker compose up -d          # start Moto + Iceberg REST
+./scripts/bootstrap.sh        # build the core stack (rerun after restarting Moto)
+docker compose down           # stop; Moto is in-memory, so everything is wiped
 ```
 
-Endpoints (localhost only): S3/Kinesis at `http://localhost:4566`, Iceberg REST at
-`http://localhost:8181`. Use dummy credentials (`test` / `test`) and region `us-east-1`.
+Use the AWS CLI against it:
+
+```bash
+export AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_DEFAULT_REGION=us-east-1
+export AWS_ENDPOINT_URL=http://localhost:4566
+unset AWS_PROFILE
+aws s3 ls
+```
+
+## New stack for any project
+
+```bash
+./scripts/new-stack.sh my-project ~/some-project/infra   # or just <name> for stacks/<name>/
+./scripts/tf-apply.sh ~/some-project/infra
+```
+
+The new stack has a provider pointed at Moto, standard tags, and an example bucket:
+
+```hcl
+module "raw" {
+  source        = "../../my-local-aws-cloud/modules/s3-bucket"   # written for you, relative
+  name          = "my-project-raw"
+  force_destroy = true                                           # local only
+  data_dir      = "${path.module}/data/raw"                      # optional: folder -> objects
+}
+```
+
+- `data_dir`: `<data_dir>/<prefix>/<file>` becomes `s3://<name>/<prefix>/<file>`. Changed files are
+  re-uploaded; removed files are deleted on the next apply. Dotfiles are skipped.
+- Other services: add plain resources (e.g. `aws_sqs_queue`, `aws_ssm_parameter`); the provider
+  already routes them to Moto.
+- Moving to real AWS: replace the provider block with a real profile and region (no endpoints,
+  no dummy keys). Modules and resources stay the same.
+- A project's data and any client material stay in that project, never in this repo.
 
 ## Notes
 
-- LocalStack is pinned to 4.4. Recent `latest` images refuse to start without a
-  LocalStack auth token. Revisit (or switch to MinIO) before upgrading.
-- Both published ports bind to 127.0.0.1 only.
+- Moto keeps state in memory. After a restart, rerun `tf-apply.sh` / `bootstrap.sh`: Terraform sees
+  the resources are gone and recreates them.
+- Moto ignores tags sent while creating a bucket or stream; `tf-apply.sh` runs a second apply when
+  the first leaves anything unset.
+- Ports bind to 127.0.0.1 only. `iceberg-rest-fixture` is not version-pinned yet.
 
 ## Safety rules
 
-- Use dummy credentials and a local endpoint only.
-- Never put real or client data in this repo or its volumes.
-- Treat all local state as throwaway.
+- Dummy credentials and a local endpoint only. Real AWS rejects the dummy keys.
+- No real or client data in this repo. Treat all local state as throwaway.
 
 ## License
 

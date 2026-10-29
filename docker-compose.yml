@@ -1,20 +1,20 @@
 # Local AWS stand-ins. Dummy credentials only; all state is throwaway.
+#   moto:          S3, Kinesis, SQS, DynamoDB, SSM, Secrets Manager, ... at http://localhost:4566.
+#                  Moto (Apache 2.0) keeps state in memory: a restart wipes it; rebuild with Terraform.
+#   iceberg-rest:  Iceberg REST catalog at http://localhost:8181, warehouse in Moto's s3://warehouse/.
 services:
-  localstack:
-    image: localstack/localstack:4.4
-    container_name: mlac-localstack
+  moto:
+    image: motoserver/moto:5.2.4
+    container_name: mlac-moto
     ports:
-      - "127.0.0.1:4566:4566"
-    environment:
-      SERVICES: s3,kinesis
-    volumes:
-      - localstack-data:/var/lib/localstack
+      - "127.0.0.1:4566:5000"
+    restart: unless-stopped
 
   iceberg-rest:
     image: apache/iceberg-rest-fixture:latest
     container_name: mlac-iceberg-rest
     depends_on:
-      - localstack
+      - moto
     ports:
       - "127.0.0.1:8181:8181"
     environment:
@@ -23,8 +23,5 @@ services:
       AWS_REGION: us-east-1
       CATALOG_WAREHOUSE: s3://warehouse/
       CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
-      CATALOG_S3_ENDPOINT: http://localstack:4566
+      CATALOG_S3_ENDPOINT: http://moto:5000
       CATALOG_S3_PATH__STYLE__ACCESS: "true"
-
-volumes:
-  localstack-data:
